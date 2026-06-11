@@ -1,37 +1,35 @@
 # Metricas do benchmark sem pytest
 
-Este documento descreve as metricas adicionadas em `sem_pytest_metricas.py`, por que cada decisao de medicao foi tomada e o que cada metrica agrega ao benchmark RSA com a biblioteca `cryptography`.
+Este documento descreve as metricas adicionadas em `sem_pytest_metricas.py` e o que elas agregam ao benchmark RSA com a biblioteca `cryptography`.
 
 ## Objetivo
 
-O benchmark original sem pytest media tempo medio e desvio padrao para cifracao e decifracao. A nova copia mantem essas metricas e acrescenta:
+O benchmark original sem pytest media tempo medio e desvio padrao para cifracao e decifracao. A versao com metricas mantem essa ideia e acrescenta:
 
 - tempo de parede por operacao, com media, desvio padrao, minimo, maximo e total;
 - tempo de CPU por operacao, com media, desvio padrao e total;
 - percentual de CPU consumido pelo processo durante a janela medida;
-- percentual de espera externa estimada;
 - pico de memoria Python observado por `tracemalloc`;
-- memoria Python ainda alocada ao fim da janela medida;
-- variacao de RSS do processo.
+- memoria Python ainda alocada ao fim da janela medida.
 
-A copia tambem mede `gerar_chave`, alem de `cifrar` e `decifrar`, porque a geracao de chaves e uma parte importante do custo real de uso de RSA e ja aparece no conjunto de testes com pytest.
+A geracao de chaves fica fora da janela medida, como no `sem_pytest.py` original. Assim, o experimento continua comparando apenas cifracao e decifracao nas mesmas rodadas de `10`, `100`, `1000` e `10000` iteracoes.
 
 ## Metricas de tempo
 
 ### Wall time
 
-O wall time e medido com `time.perf_counter_ns()`. Ele representa o tempo observado no relogio de alta resolucao do sistema.
+O wall time e medido com `time.perf_counter()`. Ele representa o tempo observado no relogio de alta resolucao do sistema.
 
 O que agrega:
 
 - mostra a latencia percebida por quem executa a operacao;
 - preserva as metricas originais de tempo medio e desvio padrao;
-- permite comparar o custo observado de `gerar_chave`, `cifrar` e `decifrar`;
+- permite comparar o custo observado de `cifrar` e `decifrar`;
 - evidencia variacao entre execucoes por meio de minimo, maximo e desvio padrao.
 
 ### CPU time
 
-O CPU time e medido com `time.process_time_ns()`. Ele contabiliza o tempo de CPU consumido pelo proprio processo Python.
+O CPU time e medido com `time.process_time()`. Ele contabiliza o tempo de CPU consumido pelo proprio processo Python.
 
 O que agrega:
 
@@ -51,21 +49,7 @@ O que agrega:
 
 - valores proximos de 100% indicam que o processo ficou ocupado em CPU durante quase toda a janela medida;
 - valores muito abaixo de 100% sugerem espera, preempcao pelo sistema operacional ou outro tipo de ruido externo;
-- em cenarios com multiplas threads nativas, o valor pode passar de 100%, pois `process_time_ns()` soma CPU consumida pelo processo.
-
-### Espera externa (%)
-
-A espera externa estimada e calculada como:
-
-```text
-max(0, wall total - CPU total) / wall total * 100
-```
-
-O que agrega:
-
-- funciona como um indicador de interferencia residual;
-- ajuda a decidir se uma rodada deve ser repetida em um ambiente mais silencioso;
-- evita mascarar ruido descartando resultados automaticamente.
+- em cenarios com multiplas threads nativas, o valor pode passar de 100%, pois `process_time()` soma CPU consumida pelo processo.
 
 ## Metricas de memoria
 
@@ -92,37 +76,7 @@ O que agrega:
 - ajuda a diferenciar alocacao temporaria de memoria retida;
 - pode indicar crescimento acumulado quando comparada entre rodadas.
 
-### Delta RSS
-
-O RSS e lido de `/proc/self/statm` antes e depois da janela medida. Ele representa paginas residentes do processo no sistema operacional.
-
-O que agrega:
-
-- inclui memoria do processo como um todo, inclusive partes nativas que `tracemalloc` nao rastreia;
-- ajuda a detectar crescimento de memoria fora do heap Python;
-- complementa o pico Python com uma visao do sistema operacional.
-
-Limitacoes:
-
-- o RSS pode nao cair imediatamente quando objetos sao liberados, porque o alocador pode manter memoria reservada;
-- o delta antes/depois pode perder picos muito curtos;
-- esta leitura depende de Linux por usar `/proc/self/statm`.
-
 ## Decisoes para reduzir interferencia
-
-### GC pausado durante a janela medida
-
-Antes de cada janela medida, o benchmark executa `gc.collect()`. Durante a janela medida, o coletor ciclico fica desabilitado com `gc.disable()`. Depois da coleta das metricas, o estado anterior do GC e restaurado e uma nova coleta e feita fora da medicao.
-
-Por que:
-
-- evita que uma coleta ciclica ocorra no meio de uma operacao e distorca tempo, CPU e memoria;
-- mantem a limpeza fora da janela medida;
-- preserva o comportamento normal do processo apos cada rodada.
-
-Observacao:
-
-- desabilitar o GC ciclico nao desativa contagem de referencias do CPython. Objetos comuns ainda podem ser liberados normalmente quando perdem a ultima referencia.
 
 ### Warmup antes da medicao
 
@@ -130,7 +84,7 @@ Cada operacao executa rodadas de aquecimento antes da janela medida.
 
 Por que:
 
-- reduz impacto de inicializacoes preguiçosas;
+- reduz impacto de inicializacoes tardias;
 - aquece caminhos de codigo usados pela biblioteca;
 - diminui ruido de alocacoes iniciais que nao representam a operacao em regime.
 
@@ -153,24 +107,34 @@ Por que:
 - I/O e chamadas ao sistema podem introduzir latencia externa;
 - a metrica fica mais focada no custo criptografico.
 
-### Calibracao do overhead dos temporizadores
+### GC durante a janela medida
 
-Antes das medicoes, o script mede o menor custo observado de uma janela vazia com os mesmos temporizadores e subtrai esse overhead de cada iteracao.
+Antes da medicao, o benchmark executa `gc.collect()`. Durante a janela medida, o coletor ciclico fica desabilitado com `gc.disable()` e depois volta ao estado anterior.
 
 Por que:
 
-- reduz o peso das chamadas a `perf_counter_ns()` e `process_time_ns()`;
-- e especialmente util para operacoes rapidas, como cifracao com chave menor;
-- usar o menor overhead observado evita descontar ruido externo como se fosse custo fixo.
+- evita que uma coleta ciclica ocorra no meio de uma operacao e distorca tempo, CPU e memoria;
+- preserva o comportamento normal do processo depois da rodada;
+- mantem a medicao simples sem adicionar uma infraestrutura grande ao script.
 
-### Interferencia de terceiros processos
+## O que foi simplificado
 
-Nao e possivel garantir, a partir de um script Python comum, que outros processos do sistema operacional nao concorram por CPU. Por isso, o benchmark toma duas decisoes complementares:
+O benchmark usa parametros fixos no proprio arquivo, porque o objetivo e comparar sempre o mesmo conjunto de chaves e iteracoes. Para este projeto, configuracao externa nao acrescenta valor e deixa a execucao menos direta.
 
-- usa CPU time para medir o consumo do proprio processo;
-- reporta espera externa para sinalizar quando o wall time ficou maior que o CPU time.
+Foram removidos:
 
-Com isso, o benchmark nao promete eliminar todo ruido externo, mas torna esse ruido visivel e reduz sua influencia na interpretacao principal.
+- fallback manual para ausencia de `tabulate`, porque `tabulate` e requisito do projeto;
+- medicao separada de geracao de chave, porque o benchmark base trata isso como setup;
+- leitura de RSS por `/proc/self/statm`, porque e especifica de Linux e aumenta a complexidade;
+- calibracao de overhead dos temporizadores, porque o ganho e pequeno para este nivel de benchmark;
+- coluna de espera externa, porque a coluna `CPU processo (%)` ja ajuda a interpretar interferencias externas.
+
+Os parametros agora ficam explicitos no topo do arquivo:
+
+```python
+KEY_SIZES = (2048, 4096)
+OPERATION_ITERATIONS = (10, 100, 1000, 10000)
+```
 
 ## Como executar
 
@@ -180,19 +144,8 @@ Execucao padrao:
 python3 Cryptography/sem_pytest_metricas.py
 ```
 
-Para uma rodada menor, util em validacao rapida:
-
-```bash
-RSA_BENCHMARK_ITERATIONS=10 RSA_BENCHMARK_KEYGEN_ITERATIONS=2 python3 Cryptography/sem_pytest_metricas.py
-```
-
-Variaveis disponiveis:
-
-- `RSA_BENCHMARK_KEY_SIZES`: tamanhos de chave separados por virgula. Padrao: `2048,4096`;
-- `RSA_BENCHMARK_ITERATIONS`: iteracoes de cifracao e decifracao separadas por virgula. Padrao: `10,100,1000,10000`;
-- `RSA_BENCHMARK_KEYGEN_ITERATIONS`: iteracoes de geracao de chave. Padrao: `15`;
-- `RSA_BENCHMARK_TIMER_OVERHEAD_SAMPLES`: amostras usadas para calibrar overhead dos temporizadores. Padrao: `1000`.
+Para uma rodada menor, altere temporariamente as constantes no topo de `sem_pytest_metricas.py`.
 
 ## Leitura dos resultados
 
-Use `Wall medio` e `Wall desvio` para comparar latencia observada. Use `CPU medio` e `CPU total` para comparar custo computacional com menor impacto de escalonamento externo. Use `Espera externa (%)` para identificar rodadas contaminadas por concorrencia do sistema. Use `Pico mem Python`, `Mem Python atual` e `Delta RSS` em conjunto para entender alocacoes temporarias, memoria retida e crescimento do processo no nivel do sistema operacional.
+Use `Wall medio` e `Wall desvio` para comparar latencia observada. Use `CPU medio`, `CPU total` e `CPU processo (%)` para comparar custo computacional com menor impacto de escalonamento externo. Use `Pico mem Python` e `Mem Python atual` para entender alocacoes temporarias e memoria retida dentro do que `tracemalloc` consegue rastrear.

@@ -23,11 +23,17 @@ def benchmark_encrypt(num_executions, keys, rsa_keys):
         private_key, public_key = rsa_keys[key_size]
         message = os.urandom(190)
 
-        total_times = [timeit.timeit(lambda: public_key.encrypt(message, padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
-        )), number=1) for _ in range(num_executions)]
+        total_times = [
+            timeit.timeit(
+                lambda: public_key.encrypt(
+                    message, padding.OAEP(
+                        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                        algorithm=hashes.SHA256(),
+                        label=None
+                    )
+                ), number=1
+            ) for _ in range(num_executions)
+        ]
 
         mean_time = sum(total_times) / num_executions
         std_deviation = (sum((x - mean_time) ** 2 for x in total_times) / num_executions) ** 0.5
